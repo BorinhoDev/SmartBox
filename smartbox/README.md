@@ -48,6 +48,23 @@ Se não conseguir conectar em 15 s, o ESP32 cria a rede **SmartBox** (senha `123
 
 Use duas pernas em **diagonal**: uma no **GPIO 21** e a outra no **GND**. Não precisa de resistor (o código usa o pull-up interno).
 
+## Referências
+
+Projetos públicos semelhantes, consultados como referência e inspiração para a montagem, a lógica de senha e o fluxo da caixa de entregas. O código deste repositório foi escrito pelo grupo; os links abaixo serviram de base de estudo e comparação.
+
+**Teclado e trava com ESP32**
+- [ESP32 – Keypad Door Lock (esp32io)](https://esp32io.com/tutorials/esp32-keypad-door-lock)
+- [ESP32 – Door Lock System using Password (esp32io)](https://esp32io.com/tutorials/esp32-door-lock-system-using-password)
+- [ESP32 Keypad Database Security System (Hackster)](https://hackster.io/donskytech/esp32-keypad-database-security-system-b4b4af)
+- [Exemplo de ESP32 com servo no Wokwi](https://wokwi.com/projects/413054245538808833)
+
+**Trava controlada remotamente**
+- [remote-door-lock (GitHub)](https://github.com/vilhelmprytz/remote-door-lock)
+
+**Caixas de recebimento de encomendas**
+- [Secure Package Reception Box (Hackster)](https://www.hackster.io/PSoC_Rocks/secure-package-reception-box-d3f382)
+- [Automatic Delivery Collection Bot (Hackster)](https://hackster.io/sujata3/automatic-delivery-collection-bot-cd498d)
+
 ## Observações
 
 - A página não tem login: qualquer pessoa na mesma rede consegue destravar.
