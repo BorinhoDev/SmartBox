@@ -31,11 +31,17 @@ const int TRAVADO = 0, DESTRAVADO = 90;
 WebServer server(80);
 Preferences prefs;
 
-String senha = "1234";
+const int TAM_SENHA = 4;          // senha sempre com 4 dígitos
+String senha = "2580";
 String digitado = "";
 bool destravado = false;
 bool portaFoiAberta = false;
 unsigned long inicioAperto = 0;
+
+// ---- Senha temporária (aleatória, só com 2, 5, 8 e 0) ----
+String senhaTemp = "";
+unsigned long tempInicio = 0;
+unsigned long tempDuracao = 0;    // em milissegundos
 
 // ---- Histórico de eventos (últimos 15) ----
 const int MAX_EV = 15;
@@ -89,6 +95,32 @@ void verificarPorta() {
   }
 }
 
+// ---- Senha temporária ----
+bool tempAtiva() {
+  return senhaTemp != "" && millis() - tempInicio < tempDuracao;
+}
+
+unsigned long tempRestante() {   // em segundos
+  if (!tempAtiva()) return 0;
+  return (tempDuracao - (millis() - tempInicio)) / 1000;
+}
+
+void verificarTemp() {
+  if (senhaTemp != "" && !tempAtiva()) {
+    senhaTemp = "";
+    registrar("Senha temporária expirou");
+  }
+}
+
+String gerarSenhaTemp() {
+  const char digitos[] = "2580";
+  String s = "";
+  for (int i = 0; i < TAM_SENHA; i++) {
+    s += digitos[esp_random() % 4];
+  }
+  return s;
+}
+
 // ---- Página web ----
 const char PAGINA[] PROGMEM = R"rawliteral(
 <!DOCTYPE html>
@@ -107,13 +139,15 @@ const char PAGINA[] PROGMEM = R"rawliteral(
   .aberta  { background:#14532d; }
   .info { text-align:center; margin-top:8px; color:#d1d5db; }
   .pontos { font-size:30px; text-align:center; letter-spacing:6px; min-height:40px; }
+  .temp { font-size:34px; font-weight:bold; text-align:center; letter-spacing:8px; color:#facc15; }
   .botoes { display:flex; gap:10px; }
   button { flex:1; padding:14px; font-size:16px; border:0; border-radius:8px; cursor:pointer; color:white; }
-  .verde { background:#16a34a; } .vermelho { background:#dc2626; } .azul { background:#2563eb; }
+  .verde { background:#16a34a; } .vermelho { background:#dc2626; } .azul { background:#2563eb; } .roxo { background:#7c3aed; }
   input { width:100%; box-sizing:border-box; padding:12px; font-size:18px; border-radius:8px; border:0; margin-bottom:10px; }
+  label { display:block; margin-bottom:6px; color:#d1d5db; }
   ul { list-style:none; padding:0; margin:0; font-family:monospace; font-size:14px; }
   li { padding:4px 0; border-bottom:1px solid #374151; }
-  #msg { text-align:center; margin-top:8px; min-height:20px; }
+  #msg, #msgTemp { text-align:center; margin-top:8px; min-height:20px; }
 </style>
 </head>
 <body>
@@ -138,8 +172,24 @@ const char PAGINA[] PROGMEM = R"rawliteral(
 </div>
 
 <div class="card">
-  <h2>Nova senha (só números, 1 a 8 dígitos)</h2>
-  <input id="nova" type="password" inputmode="numeric" maxlength="8" placeholder="Nova senha">
+  <h2>Senha temporária (aleatória)</h2>
+  <div id="tempAtiva" style="display:none">
+    <div class="temp" id="tempSenha"></div>
+    <div class="info">Expira em <b id="tempTempo"></b></div>
+    <br>
+    <button class="vermelho" style="width:100%" onclick="cancelarTemp()">Cancelar senha temporária</button>
+  </div>
+  <div id="tempNova">
+    <label for="minutos">Funciona por quantos minutos?</label>
+    <input id="minutos" type="number" min="1" max="1440" value="10">
+    <button class="roxo" style="width:100%" onclick="gerarTemp()">Gerar senha aleatória</button>
+  </div>
+  <div id="msgTemp"></div>
+</div>
+
+<div class="card">
+  <h2>Nova senha fixa (4 números)</h2>
+  <input id="nova" type="password" inputmode="numeric" maxlength="4" placeholder="Nova senha">
   <button class="azul" style="width:100%" onclick="mudarSenha()">Salvar senha</button>
   <div id="msg"></div>
 </div>
@@ -150,13 +200,28 @@ const char PAGINA[] PROGMEM = R"rawliteral(
 </div>
 
 <script>
+function formatarTempo(s) {
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), seg = s % 60;
+  const mm = String(m).padStart(2, '0'), ss = String(seg).padStart(2, '0');
+  return h > 0 ? h + 'h ' + mm + 'min' : mm + ':' + ss;
+}
+
 function atualizar() {
   fetch('/estado').then(r => r.json()).then(d => {
     const st = document.getElementById('status');
     st.textContent = d.destravado ? 'DESTRAVADA' : 'TRAVADA';
     st.className = 'status ' + (d.destravado ? 'aberta' : 'travada');
     document.getElementById('porta').textContent = d.porta;
-    document.getElementById('pontos').textContent = '●'.repeat(d.digitando);
+    document.getElementById('pontos').textContent = d.digitado;
+
+    const ativa = d.temp !== '';
+    document.getElementById('tempAtiva').style.display = ativa ? 'block' : 'none';
+    document.getElementById('tempNova').style.display = ativa ? 'none' : 'block';
+    if (ativa) {
+      document.getElementById('tempSenha').textContent = d.temp;
+      document.getElementById('tempTempo').textContent = formatarTempo(d.tempRestante);
+    }
+
     document.getElementById('eventos').innerHTML =
       d.eventos.map(e => '<li>' + e + '</li>').join('');
   }).catch(() => {});
@@ -164,6 +229,19 @@ function atualizar() {
 
 function enviar(rota) {
   fetch(rota, { method: 'POST' }).then(atualizar);
+}
+
+function gerarTemp() {
+  const minutos = document.getElementById('minutos').value;
+  fetch('/temp', { method: 'POST', body: new URLSearchParams({ minutos: minutos }) })
+    .then(r => r.text())
+    .then(t => { document.getElementById('msgTemp').textContent = t; atualizar(); });
+}
+
+function cancelarTemp() {
+  fetch('/cancelarTemp', { method: 'POST' })
+    .then(r => r.text())
+    .then(t => { document.getElementById('msgTemp').textContent = t; atualizar(); });
 }
 
 function mudarSenha() {
@@ -192,7 +270,9 @@ void rotaEstado() {
   String j = "{";
   j += "\"destravado\":" + String(destravado ? "true" : "false") + ",";
   j += "\"porta\":\"" + String(portaFechada() ? "fechada" : "aberta") + "\",";
-  j += "\"digitando\":" + String(digitado.length()) + ",";
+  j += "\"digitado\":\"" + digitado + "\",";
+  j += "\"temp\":\"" + (tempAtiva() ? senhaTemp : String("")) + "\",";
+  j += "\"tempRestante\":" + String(tempRestante()) + ",";
   j += "\"eventos\":[";
   int n = min(totalEv, MAX_EV);
   for (int i = 0; i < n; i++) {
@@ -216,18 +296,39 @@ void rotaTravar() {
 
 void rotaSenha() {
   String nova = server.arg("nova");
-  bool valida = nova.length() >= 1 && nova.length() <= 8;
+  bool valida = nova.length() == TAM_SENHA;
   for (unsigned int i = 0; i < nova.length(); i++) {
     if (!isDigit(nova[i])) valida = false;
   }
   if (!valida) {
-    server.send(400, "text/plain", "Senha inválida: use só números (1 a 8).");
+    server.send(400, "text/plain", "Senha inválida: use exatamente 4 números.");
     return;
   }
   senha = nova;
   prefs.putString("senha", senha);
   registrar("Senha alterada pelo site");
   server.send(200, "text/plain", "Senha salva!");
+}
+
+void rotaTemp() {
+  long minutos = server.arg("minutos").toInt();
+  if (minutos < 1 || minutos > 1440) {
+    server.send(400, "text/plain", "Tempo inválido: use de 1 a 1440 minutos.");
+    return;
+  }
+  senhaTemp = gerarSenhaTemp();
+  tempInicio = millis();
+  tempDuracao = (unsigned long)minutos * 60000UL;
+  registrar("Senha temporária criada (" + String(minutos) + " min)");
+  server.send(200, "text/plain", "Senha temporária criada!");
+}
+
+void rotaCancelarTemp() {
+  if (senhaTemp != "") {
+    senhaTemp = "";
+    registrar("Senha temporária cancelada");
+  }
+  server.send(200, "text/plain", "Senha temporária cancelada.");
 }
 
 void setup() {
@@ -237,7 +338,11 @@ void setup() {
   trava.attach(PINO_SERVO, 500, 2400);
 
   prefs.begin("smartbox", false);
-  senha = prefs.getString("senha", "1234");   // padrão 1234
+  senha = prefs.getString("senha", "2580");   // padrão 2580
+  if (senha.length() != TAM_SENHA) {          // senha antiga fora do padrão
+    senha = "2580";
+    prefs.putString("senha", senha);
+  }
 
   // Conecta no Wi-Fi (LED pisca enquanto tenta)
   WiFi.begin(WIFI_NOME, WIFI_SENHA);
@@ -263,31 +368,38 @@ void setup() {
   server.on("/abrir", HTTP_POST, rotaAbrir);
   server.on("/travar", HTTP_POST, rotaTravar);
   server.on("/senha", HTTP_POST, rotaSenha);
+  server.on("/temp", HTTP_POST, rotaTemp);
+  server.on("/cancelarTemp", HTTP_POST, rotaCancelarTemp);
   server.begin();
 }
 
 void loop() {
   server.handleClient();
   verificarPorta();
+  verificarTemp();
 
   char t = teclado.getKey();
   if (!t) return;
 
-  if (t == '*') {
+  if (t == '*' || t == '#') {     // * ou # apagam o que foi digitado
     digitado = "";
-    registrar("Tecla * (apagou)");
+    registrar(String("Tecla ") + t + " (apagou)");
+    return;
   }
-  else if (t == '#') {
+
+  digitado += t;
+  registrar("Tecla " + String(t));
+
+  if (digitado.length() == TAM_SENHA) {   // 4 dígitos: confere na hora
     if (digitado == senha) {
       registrar("Senha correta no teclado");
       destravar("teclado");
-    } else if (digitado != "") {
+    } else if (tempAtiva() && digitado == senhaTemp) {
+      registrar("Senha temporária usada no teclado");
+      destravar("senha temporária");
+    } else {
       registrar("Senha ERRADA no teclado");
     }
     digitado = "";
-  }
-  else {
-    digitado += t;
-    registrar("Tecla " + String(t));
   }
 }

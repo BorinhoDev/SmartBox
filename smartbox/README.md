@@ -4,14 +4,15 @@ Caixa com senha: o teclado 4x3 destrava o servo, o botão da porta trava de novo
 
 ## O que faz
 
-- **Teclado:** digite a senha e aperte `#` para destravar. `*` apaga o que foi digitado.
+- **Teclado:** a senha tem 4 dígitos. Ao digitar o 4º número, ele confere na hora (destrava ou registra senha errada). `*` ou `#` apagam o que foi digitado.
 - **Botão da porta:** depois de destravar, a porta precisa abrir (botão solto). Quando ela fecha e aperta o botão por 0,5 s, o servo trava sozinho.
 - **Página web** (`http://smartbox.local`):
   - estado da trava e da porta;
-  - os ●●● aparecem enquanto alguém digita;
+  - os números aparecem enquanto alguém digita;
+  - **senha temporária:** gera uma senha aleatória de 4 dígitos (só com 2, 5, 8 e 0) que funciona pelo tempo escolhido (1 a 1440 min) e pode ser cancelada;
   - histórico das últimas 15 teclas/eventos;
   - botões **Destravar** e **Travar**;
-  - troca da senha (só números, 1 a 8 dígitos). A senha fica salva mesmo desligando o ESP32. Padrão: `1234`.
+  - troca da senha fixa (exatamente 4 números). A senha fica salva mesmo desligando o ESP32. Padrão: `2580`.
 - **LED azul da placa:** pisca enquanto conecta no Wi-Fi; aceso = destravado.
 
 ## Antes de carregar
