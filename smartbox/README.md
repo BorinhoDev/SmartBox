@@ -10,18 +10,34 @@ Caixa com senha: o teclado 4x3 destrava o servo, o botão da porta trava de novo
   - estado da trava e da porta;
   - os números aparecem enquanto alguém digita;
   - **senha temporária:** gera uma senha aleatória de 4 dígitos (só com 2, 5, 8 e 0) que funciona pelo tempo escolhido (1 a 1440 min) e pode ser cancelada;
-  - histórico das últimas 15 teclas/eventos;
+  - quadro **Rede**: status da conexão, IP, MAC, sinal (dBm), quedas e hora do ESP32;
+  - os 15 eventos mais recentes do log e o link para o log completo (`/log`);
   - botões **Destravar** e **Travar**;
   - troca da senha fixa (exatamente 4 números). A senha fica salva mesmo desligando o ESP32. Padrão: `2580`.
 - **LED azul da placa:** pisca enquanto conecta no Wi-Fi; aceso = destravado.
+- **Log persistente:** cada evento é gravado na memória flash (LittleFS, arquivo `/log.txt`) como `[INFO]`, `[AVISO]` ou `[ERRO]`, com data e hora pegas por NTP. Acima de 64 KB o arquivo vira `/log_antigo.txt`.
+- **Reconexão:** se o Wi-Fi cair, registra `[ERRO]`, tenta reconectar a cada 10 s (`[AVISO]`) e registra `[INFO]` com o IP quando volta.
+
+## Rotas do servidor (HTTP, porta 80)
+
+| Método | Rota | Função |
+|---|---|---|
+| GET | `/` | Página web |
+| GET | `/estado` | JSON com trava, porta, senha temporária, IP, MAC, sinal, Wi-Fi, hora e últimos eventos |
+| GET | `/log` | Log completo da flash (texto) |
+| POST | `/abrir` | Destrava |
+| POST | `/travar` | Trava |
+| POST | `/senha` | Troca a senha fixa (`nova`, 4 dígitos) |
+| POST | `/temp` | Gera senha temporária (`minutos`, 1 a 1440) |
+| POST | `/cancelarTemp` | Cancela a senha temporária |
 
 ## Antes de carregar
 
 1. Placa na Arduino IDE: **ESP32 Dev Module**.
-2. Bibliotecas: **Keypad** (Mark Stanley / Alexander Brevig) e **ESP32Servo** (Kevin Harrington).
+2. Bibliotecas: **Keypad** (Mark Stanley / Alexander Brevig) e **ESP32Servo** (Kevin Harrington). WiFi, WebServer, ESPmDNS, LittleFS e Preferences já vêm com o pacote do ESP32.
 3. No começo do `smartbox.ino`, troque `NOME_DA_REDE` e `SENHA_AQUI` pelos dados da rede (Wi-Fi **2.4 GHz**).
 
-Se não conseguir conectar em 15 s, o ESP32 cria a rede **SmartBox** (senha `12345678`) e a página fica em `http://192.168.4.1`.
+O ESP32 entra na rede da casa e a página fica em `http://smartbox.local` ou no IP mostrado no Monitor Serial (115200). Os clientes precisam estar na mesma rede.
 
 ## Ligação
 

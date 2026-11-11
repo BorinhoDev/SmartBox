@@ -2,6 +2,8 @@
 #include <WebServer.h>
 #include <ESPmDNS.h>
 #include <Preferences.h>
+#include <LittleFS.h>
+#include <time.h>
 #include <Keypad.h>
 #include <ESP32Servo.h>
 
@@ -28,7 +30,7 @@ const int PINO_BOTAO = 21;
 const int PINO_LED   = 2;
 const int TRAVADO = 0, DESTRAVADO = 90;
 
-WebServer server(80);
+WebServer server(80);             // servidor HTTP na porta 80 (TCP)
 Preferences prefs;
 
 const int TAM_SENHA = 4;          // senha sempre com 4 dígitos
@@ -43,19 +45,52 @@ String senhaTemp = "";
 unsigned long tempInicio = 0;
 unsigned long tempDuracao = 0;    // em milissegundos
 
-// ---- Histórico de eventos (últimos 15) ----
+// ---- Wi-Fi: reconexão ----
+bool wifiOk = false;
+bool mdnsAtivo = false;
+unsigned long ultimaTentativa = 0;
+int quedas = 0;
+
+// ---- Log: últimos 15 na memória + arquivo na flash ----
 const int MAX_EV = 15;
 String eventos[MAX_EV];
 int totalEv = 0;
+bool flashOk = false;
+const char* ARQ_LOG = "/log.txt";
+const char* ARQ_LOG_ANTIGO = "/log_antigo.txt";
+const size_t LIMITE_LOG = 64 * 1024;   // ao passar de 64 KB, o log vira "antigo"
 
-void registrar(String msg) {
+// Data e hora pelo NTP; antes de sincronizar, usa o tempo desde que ligou
+String agora() {
+  struct tm t;
+  if (getLocalTime(&t, 10)) {
+    char b[24];
+    strftime(b, sizeof(b), "%d/%m/%Y %H:%M:%S", &t);
+    return String(b);
+  }
   unsigned long s = millis() / 1000;
-  char tempo[12];
-  sprintf(tempo, "%02lu:%02lu", s / 60, s % 60);
-  String linha = String(tempo) + " - " + msg;
+  char b[24];
+  sprintf(b, "sem hora +%02lu:%02lu", s / 60, s % 60);
+  return String(b);
+}
+
+// nivel: "INFO", "AVISO" ou "ERRO"
+void registrar(String nivel, String msg) {
+  String linha = "[" + nivel + "] " + agora() + " - " + msg;
   eventos[totalEv % MAX_EV] = linha;
   totalEv++;
   Serial.println(linha);
+
+  if (!flashOk) return;
+  File f = LittleFS.open(ARQ_LOG, FILE_APPEND);
+  if (!f) return;
+  f.println(linha);
+  size_t tamanho = f.size();
+  f.close();
+  if (tamanho > LIMITE_LOG) {
+    LittleFS.remove(ARQ_LOG_ANTIGO);
+    LittleFS.rename(ARQ_LOG, ARQ_LOG_ANTIGO);
+  }
 }
 
 bool portaFechada() {
@@ -67,7 +102,7 @@ void travar(String origem) {
   destravado = false;
   portaFoiAberta = false;
   digitalWrite(PINO_LED, LOW);
-  registrar("Travado (" + origem + ")");
+  registrar("INFO", "Travado (" + origem + ")");
 }
 
 void destravar(String origem) {
@@ -75,23 +110,49 @@ void destravar(String origem) {
   destravado = true;
   portaFoiAberta = false;
   digitalWrite(PINO_LED, HIGH);
-  registrar("Destravado (" + origem + ")");
+  registrar("INFO", "Destravado (" + origem + ")");
 }
 
 void verificarPorta() {
   if (!destravado) return;
 
   if (!portaFechada()) {
-    if (!portaFoiAberta) registrar("Porta aberta");
+    if (!portaFoiAberta) registrar("INFO", "Porta aberta");
     portaFoiAberta = true;
     inicioAperto = 0;
   }
   else if (portaFoiAberta) {
     if (inicioAperto == 0) inicioAperto = millis();
     if (millis() - inicioAperto > 500) {
-      registrar("Porta fechada");
+      registrar("INFO", "Porta fechada");
       travar("porta");
     }
+  }
+}
+
+// ---- Wi-Fi: detecta queda e reconecta a cada 10 s ----
+void verificarWifi() {
+  bool conectado = WiFi.status() == WL_CONNECTED;
+
+  if (conectado && !wifiOk) {
+    wifiOk = true;
+    if (mdnsAtivo) MDNS.end();
+    mdnsAtivo = MDNS.begin("smartbox");
+    registrar("INFO", "Wi-Fi conectado. IP " + WiFi.localIP().toString() +
+                      ", sinal " + String(WiFi.RSSI()) + " dBm");
+  }
+  else if (!conectado && wifiOk) {
+    wifiOk = false;
+    quedas++;
+    registrar("ERRO", "Conexão Wi-Fi perdida (queda " + String(quedas) + ")");
+    ultimaTentativa = millis();
+  }
+
+  if (!conectado && millis() - ultimaTentativa > 10000) {
+    ultimaTentativa = millis();
+    registrar("AVISO", "Tentando reconectar ao Wi-Fi " + String(WIFI_NOME));
+    WiFi.disconnect();
+    WiFi.begin(WIFI_NOME, WIFI_SENHA);
   }
 }
 
@@ -107,8 +168,8 @@ unsigned long tempRestante() {   // em segundos
 
 void verificarTemp() {
   if (senhaTemp != "" && !tempAtiva()) {
+    registrar("INFO", "Senha temporária " + senhaTemp + " expirou");
     senhaTemp = "";
-    registrar("Senha temporária expirou");
   }
 }
 
@@ -145,8 +206,11 @@ const char PAGINA[] PROGMEM = R"rawliteral(
   .verde { background:#16a34a; } .vermelho { background:#dc2626; } .azul { background:#2563eb; } .roxo { background:#7c3aed; }
   input { width:100%; box-sizing:border-box; padding:12px; font-size:18px; border-radius:8px; border:0; margin-bottom:10px; }
   label { display:block; margin-bottom:6px; color:#d1d5db; }
-  ul { list-style:none; padding:0; margin:0; font-family:monospace; font-size:14px; }
+  table { width:100%; font-size:14px; } td { padding:3px 0; } td:last-child { text-align:right; font-family:monospace; }
+  a { color:#93c5fd; }
+  ul { list-style:none; padding:0; margin:0; font-family:monospace; font-size:13px; }
   li { padding:4px 0; border-bottom:1px solid #374151; }
+  .ERRO { color:#fca5a5; } .AVISO { color:#fcd34d; }
   #msg, #msgTemp { text-align:center; margin-top:8px; min-height:20px; }
 </style>
 </head>
@@ -195,7 +259,19 @@ const char PAGINA[] PROGMEM = R"rawliteral(
 </div>
 
 <div class="card">
-  <h2>Histórico</h2>
+  <h2>Rede</h2>
+  <table>
+    <tr><td>Status</td><td id="wifi">...</td></tr>
+    <tr><td>Endereço IP</td><td id="ip">...</td></tr>
+    <tr><td>MAC</td><td id="mac">...</td></tr>
+    <tr><td>Sinal</td><td id="rssi">...</td></tr>
+    <tr><td>Quedas desde que ligou</td><td id="quedas">...</td></tr>
+    <tr><td>Hora do ESP32</td><td id="hora">...</td></tr>
+  </table>
+</div>
+
+<div class="card">
+  <h2>Log (últimos 15) · <a href="/log" target="_blank">ver log completo</a></h2>
   <ul id="eventos"></ul>
 </div>
 
@@ -222,8 +298,17 @@ function atualizar() {
       document.getElementById('tempTempo').textContent = formatarTempo(d.tempRestante);
     }
 
-    document.getElementById('eventos').innerHTML =
-      d.eventos.map(e => '<li>' + e + '</li>').join('');
+    document.getElementById('wifi').textContent = d.wifi;
+    document.getElementById('ip').textContent = d.ip;
+    document.getElementById('mac').textContent = d.mac;
+    document.getElementById('rssi').textContent = d.rssi + ' dBm';
+    document.getElementById('quedas').textContent = d.quedas;
+    document.getElementById('hora').textContent = d.hora;
+
+    document.getElementById('eventos').innerHTML = d.eventos.map(e => {
+      const nivel = e.startsWith('[ERRO]') ? 'ERRO' : (e.startsWith('[AVISO]') ? 'AVISO' : '');
+      return '<li class="' + nivel + '">' + e + '</li>';
+    }).join('');
   }).catch(() => {});
 }
 
@@ -273,6 +358,12 @@ void rotaEstado() {
   j += "\"digitado\":\"" + digitado + "\",";
   j += "\"temp\":\"" + (tempAtiva() ? senhaTemp : String("")) + "\",";
   j += "\"tempRestante\":" + String(tempRestante()) + ",";
+  j += "\"wifi\":\"" + String(WiFi.status() == WL_CONNECTED ? "conectado" : "desconectado") + "\",";
+  j += "\"ip\":\"" + WiFi.localIP().toString() + "\",";
+  j += "\"mac\":\"" + WiFi.macAddress() + "\",";
+  j += "\"rssi\":" + String(WiFi.RSSI()) + ",";
+  j += "\"quedas\":" + String(quedas) + ",";
+  j += "\"hora\":\"" + agora() + "\",";
   j += "\"eventos\":[";
   int n = min(totalEv, MAX_EV);
   for (int i = 0; i < n; i++) {
@@ -282,6 +373,25 @@ void rotaEstado() {
   }
   j += "]}";
   server.send(200, "application/json", j);
+}
+
+// Log completo guardado na flash (o antigo primeiro, depois o atual)
+void rotaLog() {
+  if (!flashOk) {
+    server.send(500, "text/plain; charset=utf-8", "Memória flash indisponível.");
+    return;
+  }
+  String texto = "";
+  const char* arquivos[] = { ARQ_LOG_ANTIGO, ARQ_LOG };
+  for (const char* nome : arquivos) {
+    File f = LittleFS.open(nome, FILE_READ);
+    if (f) {
+      texto += f.readString();
+      f.close();
+    }
+  }
+  if (texto == "") texto = "Log vazio.";
+  server.send(200, "text/plain; charset=utf-8", texto);
 }
 
 void rotaAbrir() {
@@ -301,12 +411,13 @@ void rotaSenha() {
     if (!isDigit(nova[i])) valida = false;
   }
   if (!valida) {
+    registrar("AVISO", "Tentativa de salvar senha inválida pelo site");
     server.send(400, "text/plain", "Senha inválida: use exatamente 4 números.");
     return;
   }
   senha = nova;
   prefs.putString("senha", senha);
-  registrar("Senha alterada pelo site");
+  registrar("INFO", "Senha fixa alterada pelo site");
   server.send(200, "text/plain", "Senha salva!");
 }
 
@@ -319,14 +430,14 @@ void rotaTemp() {
   senhaTemp = gerarSenhaTemp();
   tempInicio = millis();
   tempDuracao = (unsigned long)minutos * 60000UL;
-  registrar("Senha temporária criada (" + String(minutos) + " min)");
+  registrar("INFO", "Senha temporária " + senhaTemp + " criada (" + String(minutos) + " min)");
   server.send(200, "text/plain", "Senha temporária criada!");
 }
 
 void rotaCancelarTemp() {
   if (senhaTemp != "") {
+    registrar("INFO", "Senha temporária " + senhaTemp + " cancelada");
     senhaTemp = "";
-    registrar("Senha temporária cancelada");
   }
   server.send(200, "text/plain", "Senha temporária cancelada.");
 }
@@ -337,6 +448,9 @@ void setup() {
   pinMode(PINO_LED, OUTPUT);
   trava.attach(PINO_SERVO, 500, 2400);
 
+  flashOk = LittleFS.begin(true);   // formata na primeira vez
+  if (!flashOk) Serial.println("[ERRO] Falha ao montar a memória flash (LittleFS)");
+
   prefs.begin("smartbox", false);
   senha = prefs.getString("senha", "2580");   // padrão 2580
   if (senha.length() != TAM_SENHA) {          // senha antiga fora do padrão
@@ -344,37 +458,42 @@ void setup() {
     prefs.putString("senha", senha);
   }
 
-  // Conecta no Wi-Fi (LED pisca enquanto tenta)
+  // Horário de Brasília pelo NTP (vale assim que o Wi-Fi conectar)
+  configTzTime("<-03>3", "a.st1.ntp.br", "pool.ntp.org");
+
+  // Conecta no Wi-Fi da casa (LED pisca enquanto tenta)
+  WiFi.mode(WIFI_STA);
   WiFi.begin(WIFI_NOME, WIFI_SENHA);
   unsigned long inicio = millis();
   while (WiFi.status() != WL_CONNECTED && millis() - inicio < 15000) {
     digitalWrite(PINO_LED, !digitalRead(PINO_LED));
     delay(300);
   }
+  struct tm t;
+  getLocalTime(&t, 5000);           // espera a hora chegar (até 5 s)
 
-  if (WiFi.status() == WL_CONNECTED) {
-    MDNS.begin("smartbox");
-    Serial.print("Abra: http://smartbox.local  ou  http://");
-    Serial.println(WiFi.localIP());
-  } else {
-    WiFi.softAP("SmartBox", "12345678");   // plano B
-    Serial.println("Sem Wi-Fi: conecte em SmartBox e abra http://192.168.4.1");
+  registrar("INFO", "SmartBox ligado");
+  if (WiFi.status() != WL_CONNECTED) {
+    registrar("ERRO", "Não conectou ao Wi-Fi " + String(WIFI_NOME) + " ao ligar");
   }
-
-  travar("início");   // também apaga o LED
+  verificarWifi();                  // registra IP e liga o mDNS
+  travar("início");                 // também apaga o LED
 
   server.on("/", HTTP_GET, rotaPagina);
   server.on("/estado", HTTP_GET, rotaEstado);
+  server.on("/log", HTTP_GET, rotaLog);
   server.on("/abrir", HTTP_POST, rotaAbrir);
   server.on("/travar", HTTP_POST, rotaTravar);
   server.on("/senha", HTTP_POST, rotaSenha);
   server.on("/temp", HTTP_POST, rotaTemp);
   server.on("/cancelarTemp", HTTP_POST, rotaCancelarTemp);
-  server.begin();
+  server.begin();                   // abre a porta 80 e fica escutando
+  Serial.println("Abra: http://smartbox.local  ou  http://" + WiFi.localIP().toString());
 }
 
 void loop() {
   server.handleClient();
+  verificarWifi();
   verificarPorta();
   verificarTemp();
 
@@ -383,22 +502,20 @@ void loop() {
 
   if (t == '*' || t == '#') {     // * ou # apagam o que foi digitado
     digitado = "";
-    registrar(String("Tecla ") + t + " (apagou)");
     return;
   }
 
   digitado += t;
-  registrar("Tecla " + String(t));
 
   if (digitado.length() == TAM_SENHA) {   // 4 dígitos: confere na hora
     if (digitado == senha) {
-      registrar("Senha correta no teclado");
+      registrar("INFO", "Senha fixa correta no teclado");
       destravar("teclado");
     } else if (tempAtiva() && digitado == senhaTemp) {
-      registrar("Senha temporária usada no teclado");
+      registrar("INFO", "Senha temporária " + senhaTemp + " usada no teclado");
       destravar("senha temporária");
     } else {
-      registrar("Senha ERRADA no teclado");
+      registrar("AVISO", "Senha errada no teclado");
     }
     digitado = "";
   }
